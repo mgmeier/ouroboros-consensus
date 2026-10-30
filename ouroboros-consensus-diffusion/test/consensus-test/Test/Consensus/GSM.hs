@@ -43,7 +43,7 @@ import qualified Control.Monad.IOSim as IOSim
 import Control.Monad.Reader
 import Control.Tracer (mkTracer)
 import Data.Functor ((<&>))
-import Data.List ((\\))
+import Data.List (inits, (\\))
 import qualified Data.Map.Strict as Map
 import qualified Data.Reflection as Reflection
 import qualified Data.Set as Set
@@ -71,6 +71,7 @@ tests = adhoc <> core
  where
   adhoc =
     [ testProperty "GSM yield regression" prop_yield_regression
+    , testProperty "HasBeenCaughtUp" prop_hasBeenCaughtUp
     ]
   core =
     [ adjustQuickCheckTests (* 10) $
@@ -110,6 +111,25 @@ prop_yield_regression =
       <> (wrapPositiveAction $ TimePasses 61)
       <> (wrapPositiveAction $ ExtendSelection (S (-4)))
       <> (wrapPositiveAction $ ReadMarker)
+
+-- | 'GSM.HasBeenCaughtUp' is unknown until a state is recorded, and from then
+-- on says whether any recorded state was 'GSM.CaughtUp'.
+prop_hasBeenCaughtUp :: QC.Property
+prop_hasBeenCaughtUp =
+  QC.forAll (QC.listOf (elements [GSM.PreSyncing, GSM.Syncing, GSM.CaughtUp])) $ \states ->
+    let answers = IOSim.runSimOrThrow $ do
+          hasBeenCaughtUp <- GSM.newHasBeenCaughtUp
+          let answer =
+                atomically $
+                  (Just <$> GSM.awaitHasBeenCaughtUp hasBeenCaughtUp) `orElse` pure Nothing
+          initial <- answer
+          afterEach <- Monad.forM states $ \st -> do
+            atomically $ GSM.recordGsmState hasBeenCaughtUp st
+            answer
+          pure (initial : afterEach)
+        expected =
+          Nothing : map (Just . elem GSM.CaughtUp) (drop 1 (inits states))
+     in answers QC.=== expected
 
 prop_sequential_iosim ::
   Maybe UpstreamPeer -> LedgerStateJudgement -> QC.Fun (Set.Set UpstreamPeer) Bool -> QC.Property
